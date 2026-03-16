@@ -1,12 +1,9 @@
 ## High-level Vulkan context for easy device, swapchain, and sync setup.
 ## Ported from vulkan_examples/vulkan_context.nim to use the vk14 bindings.
 
-when defined(windows):
-  {.emit: """/*INCLUDESECTION*/
-#include <windows.h>
-""".}
-
 import std/sets
+when defined(windows):
+  import windy/platforms/win32/windefs
 import types, commands, features, loader, extras
 
 type
@@ -277,13 +274,12 @@ proc initDevice*(
   loadVK_KHR_swapchain()
 
   # Create Win32 surface.
-  var hinstance: pointer
-  {.emit: ["", hinstance, " = (void*)GetModuleHandleW(0);"].}
+  let hinstance = GetModuleHandleW(nil)
 
   var surfaceCreateInfo = VkWin32SurfaceCreateInfoKHR(
     sType: VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-    hinstance: cast[HINSTANCE](hinstance),
-    hwnd: cast[HWND](hwnd),
+    hinstance: cast[pointer](hinstance),
+    hwnd: cast[pointer](hwnd),
   )
   if vkCreateWin32SurfaceKHR(
        ctx.instance, surfaceCreateInfo.addr, nil,
