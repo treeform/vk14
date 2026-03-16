@@ -2,9 +2,11 @@
 ## Ported from vulkan_examples/vulkan_context.nim to use the vk14 bindings.
 
 import std/sets
-when defined(windows):
-  import windy/platforms/win32/windefs
 import types, commands, features, loader, extras
+
+when defined(windows):
+  proc GetModuleHandleW(lpModuleName: pointer): pointer
+    {.dynlib: "kernel32", stdcall, importc.}
 
 type
   QueueFamilyIndices = object
