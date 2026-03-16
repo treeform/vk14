@@ -1,0 +1,20 @@
+name: Github Actions
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: treeform/setup-nim-action@v6
+      - run: nimby install -g
+      - run: nim check src/vk14.nim
+      - run: nim r tests/tests.nim
