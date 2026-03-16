@@ -276,23 +276,26 @@ proc initDevice*(
 
   setInstance(cast[pointer](ctx.instance))
   loadVK_KHR_surface()
-  loadVK_KHR_win32_surface()
   loadVK_KHR_swapchain()
 
-  # Create Win32 surface.
-  let hinstance = GetModuleHandleW(nil)
+  when defined(windows):
+    loadVK_KHR_win32_surface()
 
-  var surfaceCreateInfo = VkWin32SurfaceCreateInfoKHR(
-    sType: VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-    hinstance: cast[pointer](hinstance),
-    hwnd: cast[pointer](hwnd),
-  )
-  if vkCreateWin32SurfaceKHR(
-       ctx.instance, surfaceCreateInfo.addr, nil,
-       ctx.surface.addr
-     ) != VK_SUCCESS:
+    let hinstance = GetModuleHandleW(nil)
+    var surfaceCreateInfo = VkWin32SurfaceCreateInfoKHR(
+      sType: VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+      hinstance: cast[pointer](hinstance),
+      hwnd: cast[pointer](hwnd),
+    )
+    if vkCreateWin32SurfaceKHR(
+         ctx.instance, surfaceCreateInfo.addr, nil,
+         ctx.surface.addr
+       ) != VK_SUCCESS:
+      raise newException(Exception,
+        "Failed to create Win32 surface")
+  else:
     raise newException(Exception,
-      "Failed to create Win32 surface")
+      "Win32 surface creation requires Windows")
 
   # Pick physical device.
   var deviceCount: uint32 = 0
