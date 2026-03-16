@@ -18,6 +18,8 @@ Auto-generated Vulkan 1.4 bindings for Nim. Downloads the official Khronos
 `vk.xml` registry and generates typed Nim bindings with a modular file layout.
 Includes a high-level context helper and six working examples.
 
+> **AI disclaimer: Much of this library was AI generated.**
+
 ## Examples
 
 | Example | What it tests |
