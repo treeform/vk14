@@ -122,7 +122,11 @@ proc isDeviceSuitable(
 proc chooseSwapSurfaceFormat(
   availableFormats: seq[VkSurfaceFormatKHR]
 ): VkSurfaceFormatKHR =
-  ## Picks SRGB B8G8R8A8 if available, otherwise first format.
+  ## Picks UNORM B8G8R8A8 if available, then SRGB, otherwise first format.
+  for f in availableFormats:
+    if f.format == VK_FORMAT_B8G8R8A8_UNORM and
+       f.colorSpace.uint32 == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
+      return f
   for f in availableFormats:
     if f.format == VK_FORMAT_B8G8R8A8_SRGB and
        f.colorSpace.uint32 == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
