@@ -1,0 +1,4 @@
+nimTitle	extras	vk14/extras.html	module src/vk14/extras		0
+nim	checkVk	vk14/extras.html#checkVk,VkResult,string	proc checkVk(result: VkResult; msg: string)		6
+nim	VK_NULL_HANDLE	vk14/extras.html#VK_NULL_HANDLE	const VK_NULL_HANDLE		12
+nim	FRAME_COUNT	vk14/extras.html#FRAME_COUNT	const FRAME_COUNT		13

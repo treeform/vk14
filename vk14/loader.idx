@@ -1,0 +1,4 @@
+nimTitle	loader	vk14/loader.html	module src/vk14/loader		0
+nim	loadVulkan	vk14/loader.html#loadVulkan	proc loadVulkan()		20
+nim	setInstance	vk14/loader.html#setInstance,pointer	proc setInstance(instance: pointer)		39
+nim	vkInit	vk14/loader.html#vkInit	proc vkInit(load1_0 = true; load1_1 = true; load1_2 = true; load1_3 = true;\n       load1_4 = true): bool		43

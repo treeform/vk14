@@ -1,0 +1,7 @@
+nimTitle	context	vk14/context.html	module src/vk14/context		0
+nim	VulkanContext	vk14/context.html#VulkanContext	object VulkanContext		23
+nim	recreateSwapChain	vk14/context.html#recreateSwapChain,VulkanContext,int,int	proc recreateSwapChain(ctx: var VulkanContext; width, height: int)		230
+nim	initDevice	vk14/context.html#initDevice,VulkanContext,int,int,int	proc initDevice(ctx: var VulkanContext; hwnd: int; width, height: int; vsync = true)		241
+nim	recordClearFrame	vk14/context.html#recordClearFrame,VulkanContext,array[,float32],uint32	proc recordClearFrame(ctx: var VulkanContext; color: array[4, float32];\n                 imageIndex: uint32)		416
+nim	renderFrame	vk14/context.html#renderFrame,VulkanContext,array[,float32]	proc renderFrame(ctx: var VulkanContext; color: array[4, float32])		491
+nim	cleanup	vk14/context.html#cleanup,VulkanContext	proc cleanup(ctx: var VulkanContext)		554
