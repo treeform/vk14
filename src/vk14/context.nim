@@ -1,6 +1,11 @@
 ## High-level Vulkan context for easy device, swapchain, and sync setup.
 ## Ported from vulkan_examples/vulkan_context.nim to use the vk14 bindings.
 
+when defined(windows):
+  {.emit: """/*INCLUDESECTION*/
+#include <windows.h>
+""".}
+
 import std/sets
 import types, commands, features, loader, extras
 
