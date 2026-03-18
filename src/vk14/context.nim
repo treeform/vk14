@@ -39,6 +39,12 @@ type
     currentFrame*: int
     vsync*: bool
 
+proc versionString(version: uint32): string =
+  ## Formats a Vulkan API version for error messages.
+  $vkApiVersionMajor(version) & "." &
+    $vkApiVersionMinor(version) & "." &
+    $vkApiVersionPatch(version)
+
 proc isComplete(indices: QueueFamilyIndices): bool =
   ## Returns true when both queue families are found.
   indices.graphicsFamilyFound and indices.presentFamilyFound
@@ -124,13 +130,15 @@ proc isDeviceSuitable(
 proc chooseSwapSurfaceFormat(
   availableFormats: seq[VkSurfaceFormatKHR]
 ): VkSurfaceFormatKHR =
-  ## Picks UNORM B8G8R8A8 if available, then SRGB, otherwise first format.
+  ## Picks SRGB B8G8R8A8 if available, then UNORM, otherwise first format.
+  ## SRGB output avoids writing linear colors into a UNORM swapchain.
+  ## That mismatch can make darker tones look overly crushed.
   for f in availableFormats:
-    if f.format == VK_FORMAT_B8G8R8A8_UNORM and
+    if f.format == VK_FORMAT_B8G8R8A8_SRGB and
        f.colorSpace.uint32 == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
       return f
   for f in availableFormats:
-    if f.format == VK_FORMAT_B8G8R8A8_SRGB and
+    if f.format == VK_FORMAT_B8G8R8A8_UNORM and
        f.colorSpace.uint32 == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
       return f
   availableFormats[0]
@@ -247,13 +255,23 @@ proc initDevice*(
   loadVulkan()
   doAssert vkInit()
 
+  var instanceVersion = VK_API_VERSION_1_0
+  if vkEnumerateInstanceVersion != nil:
+    discard vkEnumerateInstanceVersion(instanceVersion.addr)
+  if instanceVersion < VK_API_VERSION_1_4:
+    raise newException(
+      Exception,
+      "Vulkan 1.4 is required, but the loader only supports Vulkan " &
+        versionString(instanceVersion)
+    )
+
   var appInfo = VkApplicationInfo(
     sType: VK_STRUCTURE_TYPE_APPLICATION_INFO,
     pApplicationName: "Vulkan App",
     applicationVersion: vkMakeApiVersion(0, 1, 0, 0),
     pEngineName: "No Engine",
     engineVersion: vkMakeApiVersion(0, 1, 0, 0),
-    apiVersion: VK_API_VERSION_1_1,
+    apiVersion: VK_API_VERSION_1_4,
   )
 
   let extensionNames = [
@@ -275,6 +293,7 @@ proc initDevice*(
       "Failed to create Vulkan instance")
 
   setInstance(cast[pointer](ctx.instance))
+  doAssert vkInit()
   loadVK_KHR_surface()
   loadVK_KHR_swapchain()
 
@@ -315,6 +334,17 @@ proc initDevice*(
     raise newException(Exception,
       "No suitable physical device found")
 
+  var deviceProperties: VkPhysicalDeviceProperties
+  vkGetPhysicalDeviceProperties(
+    ctx.physicalDevice, deviceProperties.addr
+  )
+  if deviceProperties.apiVersion < VK_API_VERSION_1_4:
+    raise newException(
+      Exception,
+      "Vulkan 1.4 is required, but the selected device only supports Vulkan " &
+        versionString(deviceProperties.apiVersion)
+    )
+
   # Create logical device.
   let
     queueIndices = findQueueFamilies(
@@ -334,9 +364,15 @@ proc initDevice*(
     )
   var
     deviceFeatures: VkPhysicalDeviceFeatures
+    vulkan13Features = VkPhysicalDeviceVulkan13Features(
+      sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+      synchronization2: VkBool32(VK_TRUE),
+      dynamicRendering: VkBool32(VK_TRUE),
+    )
     deviceExtNames = [cstring "VK_KHR_swapchain"]
     deviceCreateInfo = VkDeviceCreateInfo(
       sType: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      pNext: vulkan13Features.addr,
       pQueueCreateInfos: queueCreateInfos[0].addr,
       queueCreateInfoCount: queueCreateInfos.len.uint32,
       pEnabledFeatures: deviceFeatures.addr,

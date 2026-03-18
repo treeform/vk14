@@ -23,10 +23,8 @@ type
   SpriteRenderer = object
     descriptorSetLayout: VkDescriptorSetLayout
     pipelineLayout: VkPipelineLayout
-    renderPass: VkRenderPass
     pipeline: VkPipeline
     imageViews: seq[VkImageView]
-    framebuffers: seq[VkFramebuffer]
     commandBuffers: seq[VkCommandBuffer]
     textureImage: VkImage
     textureImageMemory: VkDeviceMemory
@@ -211,12 +209,21 @@ proc beginSingleTimeCommands(ctx: VulkanContext): VkCommandBuffer =
 
 proc endSingleTimeCommands(ctx: VulkanContext, commandBuffer: VkCommandBuffer) =
   checkVk(vkEndCommandBuffer(commandBuffer), "Ending single-use command buffer")
-  var submitInfo = VkSubmitInfo(
-    sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-    commandBufferCount: 1,
-    pCommandBuffers: unsafeAddr commandBuffer
+  var
+    commandBufferInfo = VkCommandBufferSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      commandBuffer: commandBuffer,
+      deviceMask: 0
+    )
+    submitInfo = VkSubmitInfo2(
+      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+      commandBufferInfoCount: 1,
+      pCommandBufferInfos: commandBufferInfo.addr
+    )
+  checkVk(
+    vkQueueSubmit2(ctx.graphicsQueue, 1, submitInfo.addr, VkFence(0)),
+    "Submitting single-use command buffer"
   )
-  checkVk(vkQueueSubmit(ctx.graphicsQueue, 1, submitInfo.addr, VkFence(0)), "Submitting single-use command buffer")
   checkVk(vkQueueWaitIdle(ctx.graphicsQueue), "Waiting for graphics queue idle")
   vkFreeCommandBuffers(ctx.device, ctx.commandPool, 1, unsafeAddr commandBuffer)
 
@@ -262,8 +269,8 @@ proc transitionImageLayout(
   mipLevels: uint32
 ) =
   let commandBuffer = beginSingleTimeCommands(ctx)
-  var barrier = VkImageMemoryBarrier(
-    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+  var barrier = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
     oldLayout: oldLayout,
     newLayout: newLayout,
     srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
@@ -278,21 +285,32 @@ proc transitionImageLayout(
     )
   )
 
-  var sourceStage, destinationStage: VkPipelineStageFlags
+  var
+    sourceStage, destinationStage: VkPipelineStageFlags2
+    srcAccess, dstAccess: VkAccessFlags2
   if oldLayout == VK_IMAGE_LAYOUT_UNDEFINED and newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-    barrier.srcAccessMask = VkAccessFlags(0)
-    barrier.dstAccessMask = VkAccessFlags(VK_ACCESS_TRANSFER_WRITE_BIT)
-    sourceStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
-    destinationStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TRANSFER_BIT)
-  elif oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-    barrier.srcAccessMask = VkAccessFlags(VK_ACCESS_TRANSFER_WRITE_BIT)
-    barrier.dstAccessMask = VkAccessFlags(VK_ACCESS_SHADER_READ_BIT)
-    sourceStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TRANSFER_BIT)
-    destinationStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+    srcAccess = VkAccessFlags2(VK_ACCESS_2_NONE)
+    dstAccess = VkAccessFlags2(VK_ACCESS_2_TRANSFER_WRITE_BIT)
+    sourceStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE)
+    destinationStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_TRANSFER_BIT)
+  elif oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and newLayout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL:
+    srcAccess = VkAccessFlags2(VK_ACCESS_2_TRANSFER_WRITE_BIT)
+    dstAccess = VkAccessFlags2(VK_ACCESS_2_SHADER_READ_BIT)
+    sourceStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_TRANSFER_BIT)
+    destinationStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT)
   else:
     raise newException(Exception, "Unsupported layout transition")
 
-  vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, VkDependencyFlags(0), 0, nil, 0, nil, 1, barrier.addr)
+  barrier.srcStageMask = sourceStage
+  barrier.srcAccessMask = srcAccess
+  barrier.dstStageMask = destinationStage
+  barrier.dstAccessMask = dstAccess
+  var dependencyInfo = VkDependencyInfo(
+    sType: VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    imageMemoryBarrierCount: 1,
+    pImageMemoryBarriers: barrier.addr
+  )
+  vkCmdPipelineBarrier2(commandBuffer, dependencyInfo.addr)
   endSingleTimeCommands(ctx, commandBuffer)
 
 proc buildMipChain(image: Image): seq[Image] =
@@ -362,7 +380,7 @@ proc uploadTexture(ctx: VulkanContext, renderer: var SpriteRenderer) =
     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32(regions.len), regions[0].addr)
   endSingleTimeCommands(ctx, commandBuffer)
 
-  transitionImageLayout(ctx, renderer.textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, renderer.textureMipLevels)
+  transitionImageLayout(ctx, renderer.textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, renderer.textureMipLevels)
 
   vkDestroyBuffer(ctx.device, stagingBuffer, nil)
   vkFreeMemory(ctx.device, stagingBufferMemory, nil)
@@ -433,7 +451,7 @@ proc createDescriptorResources(ctx: VulkanContext, renderer: var SpriteRenderer)
   var imageInfo = VkDescriptorImageInfo(
     sampler: renderer.textureSampler,
     imageView: renderer.textureImageView,
-    imageLayout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    imageLayout: VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL
   )
   var descriptorWrite = VkWriteDescriptorSet(
     sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -461,43 +479,6 @@ proc createSwapChainImageViews(ctx: VulkanContext, renderer: var SpriteRenderer)
     )
     checkVk(vkCreateImageView(ctx.device, createInfo.addr, nil, renderer.imageViews[i].addr), "Creating swapchain image view")
 
-proc createRenderPass(ctx: VulkanContext, renderer: var SpriteRenderer) =
-  var
-    colorAttachment = VkAttachmentDescription(
-      format: ctx.swapChainImageFormat,
-      samples: VK_SAMPLE_COUNT_1_BIT,
-      loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
-      storeOp: VK_ATTACHMENT_STORE_OP_STORE,
-      stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-      stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-      initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-      finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-    )
-    colorAttachmentRef = VkAttachmentReference(attachment: 0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-    subpass = VkSubpassDescription(
-      pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS,
-      colorAttachmentCount: 1,
-      pColorAttachments: colorAttachmentRef.addr
-    )
-    dependency = VkSubpassDependency(
-      srcSubpass: VK_SUBPASS_EXTERNAL,
-      dstSubpass: 0,
-      srcStageMask: VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
-      srcAccessMask: VkAccessFlags(0),
-      dstStageMask: VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
-      dstAccessMask: VkAccessFlags(VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
-    )
-    renderPassInfo = VkRenderPassCreateInfo(
-      sType: VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      attachmentCount: 1,
-      pAttachments: colorAttachment.addr,
-      subpassCount: 1,
-      pSubpasses: subpass.addr,
-      dependencyCount: 1,
-      pDependencies: dependency.addr
-    )
-  checkVk(vkCreateRenderPass(ctx.device, renderPassInfo.addr, nil, renderer.renderPass.addr), "Creating render pass")
-
 proc createGraphicsPipeline(ctx: VulkanContext, renderer: var SpriteRenderer) =
   const
     vertShaderCode = staticRead("shaders/sprite_sheet.vert.spv")
@@ -507,6 +488,21 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var SpriteRenderer) =
     fragShaderModule = createShaderModule(ctx.device, fragShaderCode)
   try:
     var
+      colorFormat = ctx.swapChainImageFormat
+      renderingInfo = VkPipelineRenderingCreateInfo(
+        sType: VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        colorAttachmentCount: 1,
+        pColorAttachmentFormats: colorFormat.addr
+      )
+      dynamicStates = [
+        VkDynamicState(VK_DYNAMIC_STATE_VIEWPORT),
+        VkDynamicState(VK_DYNAMIC_STATE_SCISSOR)
+      ]
+      dynamicState = VkPipelineDynamicStateCreateInfo(
+        sType: VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount: uint32(dynamicStates.len),
+        pDynamicStates: dynamicStates[0].addr
+      )
       vertShaderStageInfo = VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, stage: VK_SHADER_STAGE_VERTEX_BIT, module: vertShaderModule, pName: "main")
       fragShaderStageInfo = VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, stage: VK_SHADER_STAGE_FRAGMENT_BIT, module: fragShaderModule, pName: "main")
       shaderStages = [vertShaderStageInfo, fragShaderStageInfo]
@@ -523,9 +519,7 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var SpriteRenderer) =
         pVertexAttributeDescriptions: attributeDescriptions[0].addr
       )
       inputAssembly = VkPipelineInputAssemblyStateCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, primitiveRestartEnable: VkBool32(VK_FALSE))
-      viewport = VkViewport(x: 0, y: 0, width: ctx.swapChainExtent.width.float32, height: ctx.swapChainExtent.height.float32, minDepth: 0, maxDepth: 1)
-      scissor = VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: ctx.swapChainExtent)
-      viewportState = VkPipelineViewportStateCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, viewportCount: 1, pViewports: viewport.addr, scissorCount: 1, pScissors: scissor.addr)
+      viewportState = VkPipelineViewportStateCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, viewportCount: 1, scissorCount: 1)
       rasterizer = VkPipelineRasterizationStateCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, depthClampEnable: VkBool32(VK_FALSE), rasterizerDiscardEnable: VkBool32(VK_FALSE), polygonMode: VK_POLYGON_MODE_FILL, lineWidth: 1.0, cullMode: VkCullModeFlags(VK_CULL_MODE_NONE), frontFace: VK_FRONT_FACE_CLOCKWISE, depthBiasEnable: VkBool32(VK_FALSE))
       multisampling = VkPipelineMultisampleStateCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, sampleShadingEnable: VkBool32(VK_FALSE), rasterizationSamples: VK_SAMPLE_COUNT_1_BIT)
       colorBlendAttachment = VkPipelineColorBlendAttachmentState(
@@ -545,6 +539,7 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var SpriteRenderer) =
 
     var pipelineInfo = VkGraphicsPipelineCreateInfo(
       sType: VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+      pNext: renderingInfo.addr,
       stageCount: uint32(shaderStages.len),
       pStages: shaderStages[0].addr,
       pVertexInputState: vertexInputInfo.addr,
@@ -554,30 +549,13 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var SpriteRenderer) =
       pMultisampleState: multisampling.addr,
       pDepthStencilState: nil,
       pColorBlendState: colorBlending.addr,
-      pDynamicState: nil,
-      layout: renderer.pipelineLayout,
-      renderPass: renderer.renderPass,
-      subpass: 0
+      pDynamicState: dynamicState.addr,
+      layout: renderer.pipelineLayout
     )
     checkVk(vkCreateGraphicsPipelines(ctx.device, VkPipelineCache(0), 1, pipelineInfo.addr, nil, renderer.pipeline.addr), "Creating graphics pipeline")
   finally:
     vkDestroyShaderModule(ctx.device, vertShaderModule, nil)
     vkDestroyShaderModule(ctx.device, fragShaderModule, nil)
-
-proc createFramebuffers(ctx: VulkanContext, renderer: var SpriteRenderer) =
-  renderer.framebuffers.setLen(renderer.imageViews.len)
-  for i, imageView in renderer.imageViews:
-    var attachments = [imageView]
-    var framebufferInfo = VkFramebufferCreateInfo(
-      sType: VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-      renderPass: renderer.renderPass,
-      attachmentCount: 1,
-      pAttachments: attachments[0].addr,
-      width: ctx.swapChainExtent.width,
-      height: ctx.swapChainExtent.height,
-      layers: 1
-    )
-    checkVk(vkCreateFramebuffer(ctx.device, framebufferInfo.addr, nil, renderer.framebuffers[i].addr), "Creating framebuffer")
 
 proc createVertexBuffer(ctx: VulkanContext, renderer: var SpriteRenderer, maxVertexCount: int) =
   if renderer.vertexBuffer.int64 != 0:
@@ -611,9 +589,6 @@ proc destroySwapChainResources(ctx: VulkanContext, renderer: var SpriteRenderer)
   if renderer.commandBuffers.len > 0:
     vkFreeCommandBuffers(ctx.device, ctx.commandPool, uint32(renderer.commandBuffers.len), renderer.commandBuffers[0].addr)
     renderer.commandBuffers.setLen(0)
-  for framebuffer in renderer.framebuffers:
-    vkDestroyFramebuffer(ctx.device, framebuffer, nil)
-  renderer.framebuffers.setLen(0)
   for imageView in renderer.imageViews:
     vkDestroyImageView(ctx.device, imageView, nil)
   renderer.imageViews.setLen(0)
@@ -623,27 +598,20 @@ proc destroySwapChainResources(ctx: VulkanContext, renderer: var SpriteRenderer)
   if renderer.pipelineLayout.int64 != 0:
     vkDestroyPipelineLayout(ctx.device, renderer.pipelineLayout, nil)
     renderer.pipelineLayout = VkPipelineLayout(0)
-  if renderer.renderPass.int64 != 0:
-    vkDestroyRenderPass(ctx.device, renderer.renderPass, nil)
-    renderer.renderPass = VkRenderPass(0)
 
 proc recreateSwapChainResources(ctx: var VulkanContext, renderer: var SpriteRenderer, width, height: int) =
   discard vkDeviceWaitIdle(ctx.device)
   destroySwapChainResources(ctx, renderer)
   recreateSwapChain(ctx, width, height)
   createSwapChainImageViews(ctx, renderer)
-  createRenderPass(ctx, renderer)
   createGraphicsPipeline(ctx, renderer)
-  createFramebuffers(ctx, renderer)
   allocateCommandBuffers(ctx, renderer)
 
 proc initRenderer(ctx: VulkanContext, renderer: var SpriteRenderer, maxVertexCount: int) =
   uploadTexture(ctx, renderer)
   createDescriptorResources(ctx, renderer)
   createSwapChainImageViews(ctx, renderer)
-  createRenderPass(ctx, renderer)
   createGraphicsPipeline(ctx, renderer)
-  createFramebuffers(ctx, renderer)
   createVertexBuffer(ctx, renderer, maxVertexCount)
   allocateCommandBuffers(ctx, renderer)
 
@@ -665,26 +633,90 @@ proc endDraw(
   var beginInfo = VkCommandBufferBeginInfo(sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
   checkVk(vkBeginCommandBuffer(commandBuffer, beginInfo.addr), "Beginning sprite command buffer")
 
-  var clearValue = VkClearValue(color: VkClearColorValue(float32: clearColor))
-  var renderPassInfo = VkRenderPassBeginInfo(
-    sType: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-    renderPass: renderer.renderPass,
-    framebuffer: renderer.framebuffers[imageIndex],
-    renderArea: VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: ctx.swapChainExtent),
-    clearValueCount: 1,
-    pClearValues: clearValue.addr
+  let colorRange = VkImageSubresourceRange(
+    aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+    baseMipLevel: 0,
+    levelCount: 1,
+    baseArrayLayer: 0,
+    layerCount: 1
   )
+  var toAttachment = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    srcAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+    dstAccessMask: VkAccessFlags2(VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+    oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+    newLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: ctx.swapChainImages[imageIndex],
+    subresourceRange: colorRange
+  )
+  var depInfo = VkDependencyInfo(
+    sType: VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    imageMemoryBarrierCount: 1,
+    pImageMemoryBarriers: toAttachment.addr
+  )
+  vkCmdPipelineBarrier2(commandBuffer, depInfo.addr)
+
+  var
+    clearValue = VkClearValue(color: VkClearColorValue(float32: clearColor))
+    colorAttachment = VkRenderingAttachmentInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      imageView: renderer.imageViews[imageIndex],
+      imageLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+      loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
+      storeOp: VK_ATTACHMENT_STORE_OP_STORE,
+      clearValue: clearValue
+    )
+    renderingInfo = VkRenderingInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_INFO,
+      renderArea: VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: ctx.swapChainExtent),
+      layerCount: 1,
+      colorAttachmentCount: 1,
+      pColorAttachments: colorAttachment.addr
+    )
+    viewport = VkViewport(
+      x: 0,
+      y: 0,
+      width: ctx.swapChainExtent.width.float32,
+      height: ctx.swapChainExtent.height.float32,
+      minDepth: 0,
+      maxDepth: 1
+    )
+    scissor = VkRect2D(
+      offset: VkOffset2D(x: 0, y: 0),
+      extent: ctx.swapChainExtent
+    )
   var vertexBuffers = [renderer.vertexBuffer]
   var offsets = [VkDeviceSize(0)]
   var descriptorSet = renderer.descriptorSet
 
-  vkCmdBeginRenderPass(commandBuffer, renderPassInfo.addr, VK_SUBPASS_CONTENTS_INLINE)
+  vkCmdBeginRendering(commandBuffer, renderingInfo.addr)
+  vkCmdSetViewport(commandBuffer, 0, 1, viewport.addr)
+  vkCmdSetScissor(commandBuffer, 0, 1, scissor.addr)
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline)
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipelineLayout, 0, 1, descriptorSet.addr, 0, nil)
   vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers[0].addr, offsets[0].addr)
   if drawer.vertices.len > 0:
     vkCmdDraw(commandBuffer, uint32(drawer.vertices.len), 1, 0, 0)
-  vkCmdEndRenderPass(commandBuffer)
+  vkCmdEndRendering(commandBuffer)
+  var toPresent = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+    srcAccessMask: VkAccessFlags2(VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+    dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    dstAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    oldLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    newLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: ctx.swapChainImages[imageIndex],
+    subresourceRange: colorRange
+  )
+  depInfo.pImageMemoryBarriers = toPresent.addr
+  vkCmdPipelineBarrier2(commandBuffer, depInfo.addr)
   checkVk(vkEndCommandBuffer(commandBuffer), "Ending sprite command buffer")
 
 proc drawFrame(ctx: var VulkanContext, renderer: var SpriteRenderer, drawer: SpriteDrawer, clearColor: array[4, float32]): bool =
@@ -702,28 +734,46 @@ proc drawFrame(ctx: var VulkanContext, renderer: var SpriteRenderer, drawer: Spr
   endDraw(drawer, ctx, renderer, clearColor, imageIndex)
 
   var
-    waitSemaphores = [ctx.imageAvailableSemaphores[frame]]
-    waitStages: array[1, VkPipelineStageFlags] = [VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)]
-    signalSemaphores = [ctx.renderFinishedSemaphores[frame]]
     commandBuffer = renderer.commandBuffers[imageIndex]
-    submitInfo = VkSubmitInfo(
-      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      waitSemaphoreCount: 1,
-      pWaitSemaphores: waitSemaphores[0].addr,
-      pWaitDstStageMask: waitStages[0].addr,
-      commandBufferCount: 1,
-      pCommandBuffers: commandBuffer.addr,
-      signalSemaphoreCount: 1,
-      pSignalSemaphores: signalSemaphores[0].addr
+    waitInfo = VkSemaphoreSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+      semaphore: ctx.imageAvailableSemaphores[frame],
+      stageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+      value: 0,
+      deviceIndex: 0
     )
-  checkVk(vkQueueSubmit(ctx.graphicsQueue, 1, submitInfo.addr, fence), "Submitting sprite command buffer")
+    commandBufferInfo = VkCommandBufferSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      commandBuffer: commandBuffer,
+      deviceMask: 0
+    )
+    signalInfo = VkSemaphoreSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+      semaphore: ctx.renderFinishedSemaphores[frame],
+      stageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+      value: 0,
+      deviceIndex: 0
+    )
+    submitInfo = VkSubmitInfo2(
+      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+      waitSemaphoreInfoCount: 1,
+      pWaitSemaphoreInfos: waitInfo.addr,
+      commandBufferInfoCount: 1,
+      pCommandBufferInfos: commandBufferInfo.addr,
+      signalSemaphoreInfoCount: 1,
+      pSignalSemaphoreInfos: signalInfo.addr
+    )
+  checkVk(
+    vkQueueSubmit2(ctx.graphicsQueue, 1, submitInfo.addr, fence),
+    "Submitting sprite command buffer"
+  )
 
   var
     swapChains = [ctx.swapChain]
     presentInfo = VkPresentInfoKHR(
       sType: VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
       waitSemaphoreCount: 1,
-      pWaitSemaphores: signalSemaphores[0].addr,
+      pWaitSemaphores: signalInfo.semaphore.addr,
       swapchainCount: 1,
       pSwapchains: swapChains[0].addr,
       pImageIndices: imageIndex.addr

@@ -1,4 +1,4 @@
-## Vulkan triangle example using auto-generated vk14 bindings.
+## Vulkan 1.4 triangle example using dynamic rendering and Synchronization2.
 
 import
   windy,
@@ -10,12 +10,9 @@ type
     color: array[3, float32]
 
   TriangleRenderer = object
-    renderPass: VkRenderPass
     pipelineLayout: VkPipelineLayout
     pipeline: VkPipeline
     imageViews: seq[VkImageView]
-    framebuffers: seq[VkFramebuffer]
-    commandBuffers: seq[VkCommandBuffer]
     vertexBuffer: VkBuffer
     vertexBufferMemory: VkDeviceMemory
 
@@ -104,62 +101,26 @@ proc createImageViews(
       "Creating image view",
     )
 
-proc createRenderPass(
+proc destroySwapChainResources(
   ctx: VulkanContext, renderer: var TriangleRenderer
 ) =
-  ## Creates a render pass with a single color attachment.
-  var
-    colorAttachment = VkAttachmentDescription(
-      format: ctx.swapChainImageFormat,
-      samples: VK_SAMPLE_COUNT_1_BIT,
-      loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
-      storeOp: VK_ATTACHMENT_STORE_OP_STORE,
-      stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-      stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-      initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-      finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+  ## Destroys swapchain-dependent rendering resources.
+  for imageView in renderer.imageViews:
+    vkDestroyImageView(ctx.device, imageView, nil)
+  renderer.imageViews.setLen(0)
+  if renderer.pipeline.int64 != 0:
+    vkDestroyPipeline(ctx.device, renderer.pipeline, nil)
+    renderer.pipeline = VkPipeline(0)
+  if renderer.pipelineLayout.int64 != 0:
+    vkDestroyPipelineLayout(
+      ctx.device, renderer.pipelineLayout, nil
     )
-    colorAttachmentRef = VkAttachmentReference(
-      attachment: 0,
-      layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    )
-    subpass = VkSubpassDescription(
-      pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS,
-      colorAttachmentCount: 1,
-      pColorAttachments: colorAttachmentRef.addr,
-    )
-    dependency = VkSubpassDependency(
-      srcSubpass: VK_SUBPASS_EXTERNAL,
-      dstSubpass: 0,
-      srcStageMask: VkPipelineStageFlags(
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
-      srcAccessMask: VkAccessFlags(0),
-      dstStageMask: VkPipelineStageFlags(
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
-      dstAccessMask: VkAccessFlags(
-        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT),
-    )
-    renderPassInfo = VkRenderPassCreateInfo(
-      sType: VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      attachmentCount: 1,
-      pAttachments: colorAttachment.addr,
-      subpassCount: 1,
-      pSubpasses: subpass.addr,
-      dependencyCount: 1,
-      pDependencies: dependency.addr,
-    )
-
-  checkVk(
-    vkCreateRenderPass(
-      ctx.device, renderPassInfo.addr, nil,
-      renderer.renderPass.addr),
-    "Creating render pass",
-  )
+    renderer.pipelineLayout = VkPipelineLayout(0)
 
 proc createGraphicsPipeline(
   ctx: VulkanContext, renderer: var TriangleRenderer
 ) =
-  ## Creates the triangle graphics pipeline.
+  ## Creates a graphics pipeline for dynamic rendering.
   const
     VertShaderCode = staticRead("shaders/basic_triangle.vert.spv")
     FragShaderCode = staticRead("shaders/basic_triangle.frag.spv")
@@ -169,6 +130,23 @@ proc createGraphicsPipeline(
     fragModule = createShaderModule(ctx.device, FragShaderCode)
 
   try:
+    var
+      colorFormat = ctx.swapChainImageFormat
+      renderingInfo = VkPipelineRenderingCreateInfo(
+        sType: VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        colorAttachmentCount: 1,
+        pColorAttachmentFormats: colorFormat.addr,
+      )
+      dynamicStates = [
+        VkDynamicState(VK_DYNAMIC_STATE_VIEWPORT),
+        VkDynamicState(VK_DYNAMIC_STATE_SCISSOR),
+      ]
+      dynamicState = VkPipelineDynamicStateCreateInfo(
+        sType: VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount: uint32(dynamicStates.len),
+        pDynamicStates: dynamicStates[0].addr,
+      )
+
     var
       vertStageInfo = VkPipelineShaderStageCreateInfo(
         sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -212,24 +190,10 @@ proc createGraphicsPipeline(
         topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         primitiveRestartEnable: VkBool32(VK_FALSE),
       )
-      viewport = VkViewport(
-        x: 0,
-        y: ctx.swapChainExtent.height.float32,
-        width: ctx.swapChainExtent.width.float32,
-        height: -ctx.swapChainExtent.height.float32,
-        minDepth: 0,
-        maxDepth: 1,
-      )
-      scissor = VkRect2D(
-        offset: VkOffset2D(x: 0, y: 0),
-        extent: ctx.swapChainExtent,
-      )
       viewportState = VkPipelineViewportStateCreateInfo(
         sType: VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         viewportCount: 1,
-        pViewports: viewport.addr,
         scissorCount: 1,
-        pScissors: scissor.addr,
       )
       rasterizer = VkPipelineRasterizationStateCreateInfo(
         sType: VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -277,6 +241,7 @@ proc createGraphicsPipeline(
 
     var pipelineInfo = VkGraphicsPipelineCreateInfo(
       sType: VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+      pNext: renderingInfo.addr,
       stageCount: uint32(shaderStages.len),
       pStages: shaderStages[0].addr,
       pVertexInputState: vertexInputInfo.addr,
@@ -285,9 +250,8 @@ proc createGraphicsPipeline(
       pRasterizationState: rasterizer.addr,
       pMultisampleState: multisampling.addr,
       pColorBlendState: colorBlending.addr,
+      pDynamicState: dynamicState.addr,
       layout: renderer.pipelineLayout,
-      renderPass: renderer.renderPass,
-      subpass: 0,
     )
 
     checkVk(
@@ -299,31 +263,6 @@ proc createGraphicsPipeline(
   finally:
     vkDestroyShaderModule(ctx.device, vertModule, nil)
     vkDestroyShaderModule(ctx.device, fragModule, nil)
-
-proc createFramebuffers(
-  ctx: VulkanContext, renderer: var TriangleRenderer
-) =
-  ## Creates framebuffers for each swapchain image view.
-  renderer.framebuffers.setLen(renderer.imageViews.len)
-
-  for i, imageView in renderer.imageViews:
-    var
-      attachments = [imageView]
-      framebufferInfo = VkFramebufferCreateInfo(
-        sType: VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-        renderPass: renderer.renderPass,
-        attachmentCount: 1,
-        pAttachments: attachments[0].addr,
-        width: ctx.swapChainExtent.width,
-        height: ctx.swapChainExtent.height,
-        layers: 1,
-      )
-    checkVk(
-      vkCreateFramebuffer(
-        ctx.device, framebufferInfo.addr, nil,
-        renderer.framebuffers[i].addr),
-      "Creating framebuffer",
-    )
 
 proc createVertexBuffer(
   ctx: VulkanContext, renderer: var TriangleRenderer
@@ -380,119 +319,192 @@ proc createVertexBuffer(
   copyMem(mapped, unsafeAddr Vertices[0], sizeof(Vertices))
   vkUnmapMemory(ctx.device, renderer.vertexBufferMemory)
 
-proc recordCommandBuffers(
+proc requiresSwapChainRecreate(vkResult: VkResult): bool =
+  ## Returns true when the swapchain must be recreated.
+  let code = vkResult.int32
+  code == VK_SUBOPTIMAL_KHR.int32 or
+    code == VK_ERROR_OUT_OF_DATE_KHR.int32
+
+proc recordTriangleCommands(
   ctx: VulkanContext, renderer: var TriangleRenderer
 ) =
-  ## Pre-records command buffers for each framebuffer.
-  renderer.commandBuffers.setLen(renderer.framebuffers.len)
-
-  var allocInfo = VkCommandBufferAllocateInfo(
-    sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-    commandPool: ctx.commandPool,
-    level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-    commandBufferCount: uint32(renderer.commandBuffers.len),
-  )
-  checkVk(
-    vkAllocateCommandBuffers(
-      ctx.device, allocInfo.addr,
-      renderer.commandBuffers[0].addr),
-    "Allocating triangle command buffers",
-  )
-
-  for i in 0 ..< renderer.commandBuffers.len:
-    var beginInfo = VkCommandBufferBeginInfo(
-      sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-    )
-    checkVk(
-      vkBeginCommandBuffer(
-        renderer.commandBuffers[i], beginInfo.addr),
-      "Beginning triangle command buffer",
-    )
-
-    var
-      clearValue = VkClearValue(
-        color: VkClearColorValue(float32: ClearColor))
-      renderPassInfo = VkRenderPassBeginInfo(
-        sType: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        renderPass: renderer.renderPass,
-        framebuffer: renderer.framebuffers[i],
-        renderArea: VkRect2D(
-          offset: VkOffset2D(x: 0, y: 0),
-          extent: ctx.swapChainExtent),
-        clearValueCount: 1,
-        pClearValues: clearValue.addr,
-      )
-      vertexBuffers = [renderer.vertexBuffer]
-      offsets = [VkDeviceSize(0)]
-
-    vkCmdBeginRenderPass(
-      renderer.commandBuffers[i], renderPassInfo.addr,
-      VK_SUBPASS_CONTENTS_INLINE)
-    vkCmdBindPipeline(
-      renderer.commandBuffers[i],
-      VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline)
-    vkCmdBindVertexBuffers(
-      renderer.commandBuffers[i], 0, 1,
-      vertexBuffers[0].addr, offsets[0].addr)
-    vkCmdDraw(renderer.commandBuffers[i], 3, 1, 0, 0)
-    vkCmdEndRenderPass(renderer.commandBuffers[i])
-
-    checkVk(
-      vkEndCommandBuffer(renderer.commandBuffers[i]),
-      "Ending triangle command buffer",
-    )
-
-proc initRenderer(
-  ctx: VulkanContext, renderer: var TriangleRenderer
-) =
-  ## Initializes all rendering resources.
-  createImageViews(ctx, renderer)
-  createRenderPass(ctx, renderer)
-  createGraphicsPipeline(ctx, renderer)
-  createFramebuffers(ctx, renderer)
-  createVertexBuffer(ctx, renderer)
-  recordCommandBuffers(ctx, renderer)
-
-proc drawFrame(
-  ctx: var VulkanContext, renderer: TriangleRenderer
-) =
-  ## Acquires, submits, and presents a frame.
+  ## Records one frame using dynamic rendering and Synchronization2.
   let frame = ctx.currentFrame
-  let fence = ctx.inFlightFences[frame]
-
-  discard vkWaitForFences(
-    ctx.device, 1, unsafeAddr fence,
-    VkBool32(VK_TRUE), uint64.high)
-  discard vkResetFences(ctx.device, 1, unsafeAddr fence)
+  let commandBuffer = ctx.commandBuffers[frame]
 
   var imageIndex: uint32
+  let acquireResult = vkAcquireNextImageKHR(
+    ctx.device,
+    ctx.swapChain,
+    uint64.high,
+    ctx.imageAvailableSemaphores[frame],
+    VkFence(0),
+    imageIndex.addr,
+  )
+  if requiresSwapChainRecreate(acquireResult):
+    raise newException(Exception, "RECREATE_SWAPCHAIN")
+  checkVk(acquireResult, "Acquiring next swapchain image")
+
+  discard vkResetCommandBuffer(
+    commandBuffer,
+    VkCommandBufferResetFlags(0)
+  )
+
+  var beginInfo = VkCommandBufferBeginInfo(
+    sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+  )
   checkVk(
-    vkAcquireNextImageKHR(
-      ctx.device, ctx.swapChain, uint64.high,
-      ctx.imageAvailableSemaphores[frame],
-      VkFence(0), imageIndex.addr),
-    "Acquiring next swapchain image",
+    vkBeginCommandBuffer(commandBuffer, beginInfo.addr),
+    "Beginning triangle command buffer",
+  )
+
+  let subresourceRange = VkImageSubresourceRange(
+    aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+    baseMipLevel: 0,
+    levelCount: 1,
+    baseArrayLayer: 0,
+    layerCount: 1,
+  )
+
+  var toAttachment = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    srcAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    dstStageMask: VkPipelineStageFlags2(
+      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+    ),
+    dstAccessMask: VkAccessFlags2(
+      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+    ),
+    oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+    newLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: ctx.swapChainImages[imageIndex],
+    subresourceRange: subresourceRange,
+  )
+  var dependencyInfo = VkDependencyInfo(
+    sType: VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    imageMemoryBarrierCount: 1,
+    pImageMemoryBarriers: toAttachment.addr,
+  )
+  vkCmdPipelineBarrier2(commandBuffer, dependencyInfo.addr)
+
+  var
+    clearValue = VkClearValue(
+      color: VkClearColorValue(float32: ClearColor)
+    )
+    colorAttachment = VkRenderingAttachmentInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      imageView: renderer.imageViews[imageIndex],
+      imageLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+      loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
+      storeOp: VK_ATTACHMENT_STORE_OP_STORE,
+      clearValue: clearValue,
+    )
+    renderingInfo = VkRenderingInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_INFO,
+      renderArea: VkRect2D(
+        offset: VkOffset2D(x: 0, y: 0),
+        extent: ctx.swapChainExtent,
+      ),
+      layerCount: 1,
+      colorAttachmentCount: 1,
+      pColorAttachments: colorAttachment.addr,
+    )
+    viewport = VkViewport(
+      x: 0,
+      y: ctx.swapChainExtent.height.float32,
+      width: ctx.swapChainExtent.width.float32,
+      height: -ctx.swapChainExtent.height.float32,
+      minDepth: 0,
+      maxDepth: 1,
+    )
+    scissor = VkRect2D(
+      offset: VkOffset2D(x: 0, y: 0),
+      extent: ctx.swapChainExtent,
+    )
+    vertexBuffers = [renderer.vertexBuffer]
+    offsets = [VkDeviceSize(0)]
+
+  vkCmdBeginRendering(commandBuffer, renderingInfo.addr)
+  vkCmdSetViewport(commandBuffer, 0, 1, viewport.addr)
+  vkCmdSetScissor(commandBuffer, 0, 1, scissor.addr)
+  vkCmdBindPipeline(
+    commandBuffer,
+    VK_PIPELINE_BIND_POINT_GRAPHICS,
+    renderer.pipeline
+  )
+  vkCmdBindVertexBuffers(
+    commandBuffer,
+    0,
+    1,
+    vertexBuffers[0].addr,
+    offsets[0].addr
+  )
+  vkCmdDraw(commandBuffer, 3, 1, 0, 0)
+  vkCmdEndRendering(commandBuffer)
+
+  var toPresent = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(
+      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+    ),
+    srcAccessMask: VkAccessFlags2(
+      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+    ),
+    dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    dstAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    oldLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    newLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: ctx.swapChainImages[imageIndex],
+    subresourceRange: subresourceRange,
+  )
+  dependencyInfo.pImageMemoryBarriers = toPresent.addr
+  vkCmdPipelineBarrier2(commandBuffer, dependencyInfo.addr)
+
+  checkVk(
+    vkEndCommandBuffer(commandBuffer),
+    "Ending triangle command buffer",
   )
 
   var
-    waitSemaphores = [ctx.imageAvailableSemaphores[frame]]
-    waitStages: array[1, VkPipelineStageFlags] = [
-      VkPipelineStageFlags(
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)]
-    signalSemaphores = [ctx.renderFinishedSemaphores[frame]]
-    commandBuffer = renderer.commandBuffers[imageIndex]
-    submitInfo = VkSubmitInfo(
-      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      waitSemaphoreCount: 1,
-      pWaitSemaphores: waitSemaphores[0].addr,
-      pWaitDstStageMask: waitStages[0].addr,
-      commandBufferCount: 1,
-      pCommandBuffers: commandBuffer.addr,
-      signalSemaphoreCount: 1,
-      pSignalSemaphores: signalSemaphores[0].addr,
+    waitInfo = VkSemaphoreSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+      semaphore: ctx.imageAvailableSemaphores[frame],
+      stageMask: VkPipelineStageFlags2(
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+      ),
+      value: 0,
+      deviceIndex: 0,
+    )
+    commandBufferInfo = VkCommandBufferSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      commandBuffer: commandBuffer,
+      deviceMask: 0,
+    )
+    signalInfo = VkSemaphoreSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+      semaphore: ctx.renderFinishedSemaphores[frame],
+      stageMask: VkPipelineStageFlags2(
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+      ),
+      value: 0,
+      deviceIndex: 0,
+    )
+    submitInfo = VkSubmitInfo2(
+      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+      waitSemaphoreInfoCount: 1,
+      pWaitSemaphoreInfos: waitInfo.addr,
+      commandBufferInfoCount: 1,
+      pCommandBufferInfos: commandBufferInfo.addr,
+      signalSemaphoreInfoCount: 1,
+      pSignalSemaphoreInfos: signalInfo.addr,
     )
   checkVk(
-    vkQueueSubmit(ctx.graphicsQueue, 1, submitInfo.addr, fence),
+    vkQueueSubmit2(ctx.graphicsQueue, 1, submitInfo.addr, ctx.inFlightFences[frame]),
     "Submitting triangle command buffer",
   )
 
@@ -501,34 +513,62 @@ proc drawFrame(
     presentInfo = VkPresentInfoKHR(
       sType: VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
       waitSemaphoreCount: 1,
-      pWaitSemaphores: signalSemaphores[0].addr,
+      pWaitSemaphores: signalInfo.semaphore.addr,
       swapchainCount: 1,
       pSwapchains: swapChains[0].addr,
       pImageIndices: imageIndex.addr,
     )
-  checkVk(
-    vkQueuePresentKHR(ctx.presentQueue, presentInfo.addr),
-    "Presenting triangle frame",
-  )
+  let presentResult = vkQueuePresentKHR(ctx.presentQueue, presentInfo.addr)
+  if requiresSwapChainRecreate(presentResult):
+    raise newException(Exception, "RECREATE_SWAPCHAIN")
+  checkVk(presentResult, "Presenting triangle frame")
+
+proc initRenderer(
+  ctx: VulkanContext, renderer: var TriangleRenderer
+) =
+  ## Initializes all rendering resources.
+  createImageViews(ctx, renderer)
+  createGraphicsPipeline(ctx, renderer)
+  createVertexBuffer(ctx, renderer)
+
+proc recreateRenderer(
+  ctx: var VulkanContext,
+  renderer: var TriangleRenderer,
+  width, height: int
+) =
+  ## Recreates swapchain-dependent resources after resize.
+  discard vkDeviceWaitIdle(ctx.device)
+  destroySwapChainResources(ctx, renderer)
+  recreateSwapChain(ctx, width, height)
+  createImageViews(ctx, renderer)
+  createGraphicsPipeline(ctx, renderer)
+
+proc drawFrame(
+  ctx: var VulkanContext, renderer: var TriangleRenderer
+): bool =
+  ## Acquires, records, submits, and presents a frame.
+  let frame = ctx.currentFrame
+  let fence = ctx.inFlightFences[frame]
+
+  discard vkWaitForFences(
+    ctx.device, 1, unsafeAddr fence,
+    VkBool32(VK_TRUE), uint64.high)
+  discard vkResetFences(ctx.device, 1, unsafeAddr fence)
+  try:
+    recordTriangleCommands(ctx, renderer)
+  except Exception as exc:
+    if exc.msg == "RECREATE_SWAPCHAIN":
+      return true
+    raise
 
   ctx.currentFrame = (ctx.currentFrame + 1) mod FRAME_COUNT
+  false
 
 proc shutdown(
   ctx: VulkanContext, renderer: var TriangleRenderer
 ) =
   ## Releases all rendering resources.
-  for framebuffer in renderer.framebuffers:
-    vkDestroyFramebuffer(ctx.device, framebuffer, nil)
-  for imageView in renderer.imageViews:
-    vkDestroyImageView(ctx.device, imageView, nil)
-  if renderer.pipeline.int64 != 0:
-    vkDestroyPipeline(ctx.device, renderer.pipeline, nil)
-  if renderer.pipelineLayout.int64 != 0:
-    vkDestroyPipelineLayout(
-      ctx.device, renderer.pipelineLayout, nil)
-  if renderer.renderPass.int64 != 0:
-    vkDestroyRenderPass(
-      ctx.device, renderer.renderPass, nil)
+  destroySwapChainResources(ctx, renderer)
   if renderer.vertexBuffer.int64 != 0:
     vkDestroyBuffer(ctx.device, renderer.vertexBuffer, nil)
   if renderer.vertexBufferMemory.int64 != 0:
@@ -551,11 +591,26 @@ when isMainModule:
 
   var renderer: TriangleRenderer
   initRenderer(ctx, renderer)
+  var pendingResize = false
+  window.onResize = proc() =
+    pendingResize = true
 
   try:
     while not window.closeRequested:
       pollEvents()
-      drawFrame(ctx, renderer)
+      if pendingResize:
+        let size = window.size
+        if size.x > 0 and size.y > 0:
+          recreateRenderer(ctx, renderer, size.x.int, size.y.int)
+          pendingResize = false
+        else:
+          continue
+      if drawFrame(ctx, renderer):
+        let size = window.size
+        if size.x > 0 and size.y > 0:
+          recreateRenderer(ctx, renderer, size.x.int, size.y.int)
+        else:
+          pendingResize = true
   finally:
     shutdown(ctx, renderer)
     ctx.cleanup()
