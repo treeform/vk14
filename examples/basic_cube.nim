@@ -20,14 +20,12 @@ type
   CubeRenderer = object
     descriptorSetLayout: VkDescriptorSetLayout
     pipelineLayout: VkPipelineLayout
-    renderPass: VkRenderPass
     pipeline: VkPipeline
     sampleCount: VkSampleCountFlagBits
     imageViews: seq[VkImageView]
     colorImages: seq[VkImage]
     colorImageMemories: seq[VkDeviceMemory]
     colorImageViews: seq[VkImageView]
-    framebuffers: seq[VkFramebuffer]
     commandBuffers: seq[VkCommandBuffer]
     vertexBuffer: VkBuffer
     vertexBufferMemory: VkDeviceMemory
@@ -232,12 +230,21 @@ proc beginSingleTimeCommands(ctx: VulkanContext): VkCommandBuffer =
 
 proc endSingleTimeCommands(ctx: VulkanContext, commandBuffer: VkCommandBuffer) =
   checkVk(vkEndCommandBuffer(commandBuffer), "Ending single-use command buffer")
-  var submitInfo = VkSubmitInfo(
-    sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-    commandBufferCount: 1,
-    pCommandBuffers: unsafeAddr commandBuffer
+  var
+    commandBufferInfo = VkCommandBufferSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      commandBuffer: commandBuffer,
+      deviceMask: 0
+    )
+    submitInfo = VkSubmitInfo2(
+      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+      commandBufferInfoCount: 1,
+      pCommandBufferInfos: commandBufferInfo.addr
+    )
+  checkVk(
+    vkQueueSubmit2(ctx.graphicsQueue, 1, submitInfo.addr, VkFence(0)),
+    "Submitting single-use command buffer"
   )
-  checkVk(vkQueueSubmit(ctx.graphicsQueue, 1, submitInfo.addr, VkFence(0)), "Submitting single-use command buffer")
   checkVk(vkQueueWaitIdle(ctx.graphicsQueue), "Waiting for graphics queue idle")
   vkFreeCommandBuffers(ctx.device, ctx.commandPool, 1, unsafeAddr commandBuffer)
 
@@ -287,8 +294,8 @@ proc transitionImageLayout(
   mipLevels: uint32
 ) =
   let commandBuffer = beginSingleTimeCommands(ctx)
-  var barrier = VkImageMemoryBarrier(
-    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+  var barrier = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
     oldLayout: oldLayout,
     newLayout: newLayout,
     srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
@@ -304,28 +311,48 @@ proc transitionImageLayout(
   )
 
   var
-    sourceStage: VkPipelineStageFlags
-    destinationStage: VkPipelineStageFlags
+    sourceStage: VkPipelineStageFlags2
+    destinationStage: VkPipelineStageFlags2
+    srcAccess: VkAccessFlags2
+    dstAccess: VkAccessFlags2
 
   if oldLayout == VK_IMAGE_LAYOUT_UNDEFINED and newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-    barrier.srcAccessMask = VkAccessFlags(0)
-    barrier.dstAccessMask = VkAccessFlags(VK_ACCESS_TRANSFER_WRITE_BIT)
-    sourceStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
-    destinationStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TRANSFER_BIT)
-  elif oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-    barrier.srcAccessMask = VkAccessFlags(VK_ACCESS_TRANSFER_WRITE_BIT)
-    barrier.dstAccessMask = VkAccessFlags(VK_ACCESS_SHADER_READ_BIT)
-    sourceStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TRANSFER_BIT)
-    destinationStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
-  elif oldLayout == VK_IMAGE_LAYOUT_UNDEFINED and newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-    barrier.srcAccessMask = VkAccessFlags(0)
-    barrier.dstAccessMask = VkAccessFlags(VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
-    sourceStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
-    destinationStage = VkPipelineStageFlags(VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT)
+    srcAccess = VkAccessFlags2(VK_ACCESS_2_NONE)
+    dstAccess = VkAccessFlags2(VK_ACCESS_2_TRANSFER_WRITE_BIT)
+    sourceStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE)
+    destinationStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_TRANSFER_BIT)
+  elif oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and newLayout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL:
+    srcAccess = VkAccessFlags2(VK_ACCESS_2_TRANSFER_WRITE_BIT)
+    dstAccess = VkAccessFlags2(VK_ACCESS_2_SHADER_READ_BIT)
+    sourceStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_TRANSFER_BIT)
+    destinationStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT)
+  elif oldLayout == VK_IMAGE_LAYOUT_UNDEFINED and newLayout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL:
+    srcAccess = VkAccessFlags2(VK_ACCESS_2_NONE)
+    dstAccess =
+      if aspectMask.uint32 == VK_IMAGE_ASPECT_DEPTH_BIT:
+        VkAccessFlags2(VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+      else:
+        VkAccessFlags2(VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
+    sourceStage = VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE)
+    destinationStage =
+      if aspectMask.uint32 == VK_IMAGE_ASPECT_DEPTH_BIT:
+        VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT)
+      else:
+        VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT)
   else:
     raise newException(Exception, "Unsupported image layout transition")
 
-  vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, VkDependencyFlags(0), 0, nil, 0, nil, 1, barrier.addr)
+  barrier.srcStageMask = sourceStage
+  barrier.srcAccessMask = srcAccess
+  barrier.dstStageMask = destinationStage
+  barrier.dstAccessMask = dstAccess
+
+  var dependencyInfo = VkDependencyInfo(
+    sType: VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    imageMemoryBarrierCount: 1,
+    pImageMemoryBarriers: barrier.addr
+  )
+  vkCmdPipelineBarrier2(commandBuffer, dependencyInfo.addr)
   endSingleTimeCommands(ctx, commandBuffer)
 
 proc createTextureResources(ctx: VulkanContext, renderer: var CubeRenderer) =
@@ -423,7 +450,7 @@ proc createTextureResources(ctx: VulkanContext, renderer: var CubeRenderer) =
     ctx,
     renderer.textureImage,
     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
     VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
     renderer.textureMipLevels
   )
@@ -509,7 +536,7 @@ proc createDescriptorResources(ctx: VulkanContext, renderer: var CubeRenderer) =
   var imageInfo = VkDescriptorImageInfo(
     sampler: renderer.textureSampler,
     imageView: renderer.textureImageView,
-    imageLayout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    imageLayout: VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL
   )
   var descriptorWrite = VkWriteDescriptorSet(
     sType: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -635,111 +662,6 @@ proc createMsaaResources(ctx: VulkanContext, renderer: var CubeRenderer) =
     )
     checkVk(vkCreateImageView(ctx.device, depthViewInfo.addr, nil, renderer.depthImageViews[i].addr), "Creating MSAA depth image view")
 
-proc createRenderPass(ctx: VulkanContext, renderer: var CubeRenderer) =
-  var dependency = VkSubpassDependency(
-    srcSubpass: VK_SUBPASS_EXTERNAL,
-    dstSubpass: 0,
-    srcStageMask: VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT.uint32 or VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT.uint32),
-    srcAccessMask: VkAccessFlags(0),
-    dstStageMask: VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT.uint32 or VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT.uint32),
-    dstAccessMask: VkAccessFlags(VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT or VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
-  )
-
-  if renderer.msaaEnabled:
-    var
-      colorAttachment = VkAttachmentDescription(
-        format: ctx.swapChainImageFormat,
-        samples: renderer.sampleCount,
-        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
-        storeOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-        finalLayout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-      )
-      resolveAttachment = VkAttachmentDescription(
-        format: ctx.swapChainImageFormat,
-        samples: VK_SAMPLE_COUNT_1_BIT,
-        loadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        storeOp: VK_ATTACHMENT_STORE_OP_STORE,
-        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-        finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-      )
-      depthAttachment = VkAttachmentDescription(
-        format: VK_FORMAT_D32_SFLOAT,
-        samples: renderer.sampleCount,
-        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
-        storeOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-        finalLayout: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-      )
-      colorAttachmentRef = VkAttachmentReference(attachment: 0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-      resolveAttachmentRef = VkAttachmentReference(attachment: 1, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-      depthAttachmentRef = VkAttachmentReference(attachment: 2, layout: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-      attachments = [colorAttachment, resolveAttachment, depthAttachment]
-      subpass = VkSubpassDescription(
-        pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS,
-        colorAttachmentCount: 1,
-        pColorAttachments: colorAttachmentRef.addr,
-        pResolveAttachments: resolveAttachmentRef.addr,
-        pDepthStencilAttachment: depthAttachmentRef.addr
-      )
-      renderPassInfo = VkRenderPassCreateInfo(
-        sType: VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        attachmentCount: uint32(attachments.len),
-        pAttachments: attachments[0].addr,
-        subpassCount: 1,
-        pSubpasses: subpass.addr,
-        dependencyCount: 1,
-        pDependencies: dependency.addr
-      )
-    checkVk(vkCreateRenderPass(ctx.device, renderPassInfo.addr, nil, renderer.renderPass.addr), "Creating render pass")
-  else:
-    var
-      colorAttachment = VkAttachmentDescription(
-        format: ctx.swapChainImageFormat,
-        samples: VK_SAMPLE_COUNT_1_BIT,
-        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
-        storeOp: VK_ATTACHMENT_STORE_OP_STORE,
-        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-        finalLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-      )
-      depthAttachment = VkAttachmentDescription(
-        format: VK_FORMAT_D32_SFLOAT,
-        samples: VK_SAMPLE_COUNT_1_BIT,
-        loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
-        storeOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        stencilLoadOp: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-        finalLayout: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-      )
-      colorAttachmentRef = VkAttachmentReference(attachment: 0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-      depthAttachmentRef = VkAttachmentReference(attachment: 1, layout: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-      attachments = [colorAttachment, depthAttachment]
-      subpass = VkSubpassDescription(
-        pipelineBindPoint: VK_PIPELINE_BIND_POINT_GRAPHICS,
-        colorAttachmentCount: 1,
-        pColorAttachments: colorAttachmentRef.addr,
-        pDepthStencilAttachment: depthAttachmentRef.addr
-      )
-      renderPassInfo = VkRenderPassCreateInfo(
-        sType: VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        attachmentCount: uint32(attachments.len),
-        pAttachments: attachments[0].addr,
-        subpassCount: 1,
-        pSubpasses: subpass.addr,
-        dependencyCount: 1,
-        pDependencies: dependency.addr
-      )
-    checkVk(vkCreateRenderPass(ctx.device, renderPassInfo.addr, nil, renderer.renderPass.addr), "Creating render pass")
-
 proc createGraphicsPipeline(ctx: VulkanContext, renderer: var CubeRenderer) =
   const
     vertShaderCode = staticRead("shaders/basic_cube.vert.spv")
@@ -749,6 +671,22 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var CubeRenderer) =
     fragShaderModule = createShaderModule(ctx.device, fragShaderCode)
   try:
     var
+      colorFormat = ctx.swapChainImageFormat
+      renderingInfo = VkPipelineRenderingCreateInfo(
+        sType: VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        colorAttachmentCount: 1,
+        pColorAttachmentFormats: colorFormat.addr,
+        depthAttachmentFormat: VK_FORMAT_D32_SFLOAT
+      )
+      dynamicStates = [
+        VkDynamicState(VK_DYNAMIC_STATE_VIEWPORT),
+        VkDynamicState(VK_DYNAMIC_STATE_SCISSOR)
+      ]
+      dynamicState = VkPipelineDynamicStateCreateInfo(
+        sType: VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount: uint32(dynamicStates.len),
+        pDynamicStates: dynamicStates[0].addr
+      )
       vertShaderStageInfo = VkPipelineShaderStageCreateInfo(
         sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         stage: VK_SHADER_STAGE_VERTEX_BIT,
@@ -783,21 +721,10 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var CubeRenderer) =
         topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         primitiveRestartEnable: VkBool32(VK_FALSE)
       )
-      viewport = VkViewport(
-        x: 0,
-        y: ctx.swapChainExtent.height.float32,
-        width: ctx.swapChainExtent.width.float32,
-        height: -ctx.swapChainExtent.height.float32,
-        minDepth: 0,
-        maxDepth: 1
-      )
-      scissor = VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: ctx.swapChainExtent)
       viewportState = VkPipelineViewportStateCreateInfo(
         sType: VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         viewportCount: 1,
-        pViewports: viewport.addr,
-        scissorCount: 1,
-        pScissors: scissor.addr
+        scissorCount: 1
       )
       rasterizer = VkPipelineRasterizationStateCreateInfo(
         sType: VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -859,6 +786,7 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var CubeRenderer) =
 
     var pipelineInfo = VkGraphicsPipelineCreateInfo(
       sType: VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+      pNext: renderingInfo.addr,
       stageCount: uint32(shaderStages.len),
       pStages: shaderStages[0].addr,
       pVertexInputState: vertexInputInfo.addr,
@@ -868,43 +796,13 @@ proc createGraphicsPipeline(ctx: VulkanContext, renderer: var CubeRenderer) =
       pMultisampleState: multisampling.addr,
       pDepthStencilState: depthStencil.addr,
       pColorBlendState: colorBlending.addr,
-      pDynamicState: nil,
-      layout: renderer.pipelineLayout,
-      renderPass: renderer.renderPass,
-      subpass: 0
+      pDynamicState: dynamicState.addr,
+      layout: renderer.pipelineLayout
     )
     checkVk(vkCreateGraphicsPipelines(ctx.device, VkPipelineCache(0), 1, pipelineInfo.addr, nil, renderer.pipeline.addr), "Creating graphics pipeline")
   finally:
     vkDestroyShaderModule(ctx.device, vertShaderModule, nil)
     vkDestroyShaderModule(ctx.device, fragShaderModule, nil)
-
-proc createFramebuffers(ctx: VulkanContext, renderer: var CubeRenderer) =
-  renderer.framebuffers.setLen(renderer.imageViews.len)
-  for i, imageView in renderer.imageViews:
-    if renderer.msaaEnabled:
-      var attachments = [renderer.colorImageViews[i], imageView, renderer.depthImageViews[i]]
-      var framebufferInfo = VkFramebufferCreateInfo(
-        sType: VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-        renderPass: renderer.renderPass,
-        attachmentCount: uint32(attachments.len),
-        pAttachments: attachments[0].addr,
-        width: ctx.swapChainExtent.width,
-        height: ctx.swapChainExtent.height,
-        layers: 1
-      )
-      checkVk(vkCreateFramebuffer(ctx.device, framebufferInfo.addr, nil, renderer.framebuffers[i].addr), "Creating framebuffer")
-    else:
-      var attachments = [imageView, renderer.depthImageViews[i]]
-      var framebufferInfo = VkFramebufferCreateInfo(
-        sType: VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-        renderPass: renderer.renderPass,
-        attachmentCount: uint32(attachments.len),
-        pAttachments: attachments[0].addr,
-        width: ctx.swapChainExtent.width,
-        height: ctx.swapChainExtent.height,
-        layers: 1
-      )
-      checkVk(vkCreateFramebuffer(ctx.device, framebufferInfo.addr, nil, renderer.framebuffers[i].addr), "Creating framebuffer")
 
 proc createVertexBuffer(ctx: VulkanContext, renderer: var CubeRenderer) =
   let bufferSize = VkDeviceSize(sizeof(CubeVertices))
@@ -927,9 +825,6 @@ proc destroySwapChainResources(ctx: VulkanContext, renderer: var CubeRenderer) =
   if renderer.commandBuffers.len > 0:
     vkFreeCommandBuffers(ctx.device, ctx.commandPool, uint32(renderer.commandBuffers.len), renderer.commandBuffers[0].addr)
     renderer.commandBuffers.setLen(0)
-  for framebuffer in renderer.framebuffers:
-    vkDestroyFramebuffer(ctx.device, framebuffer, nil)
-  renderer.framebuffers.setLen(0)
   for imageView in renderer.colorImageViews:
     vkDestroyImageView(ctx.device, imageView, nil)
   renderer.colorImageViews.setLen(0)
@@ -957,9 +852,6 @@ proc destroySwapChainResources(ctx: VulkanContext, renderer: var CubeRenderer) =
   if renderer.pipelineLayout.int64 != 0:
     vkDestroyPipelineLayout(ctx.device, renderer.pipelineLayout, nil)
     renderer.pipelineLayout = VkPipelineLayout(0)
-  if renderer.renderPass.int64 != 0:
-    vkDestroyRenderPass(ctx.device, renderer.renderPass, nil)
-    renderer.renderPass = VkRenderPass(0)
 
 proc recreateRenderer(ctx: var VulkanContext, renderer: var CubeRenderer, width, height: int) =
   discard vkDeviceWaitIdle(ctx.device)
@@ -967,13 +859,11 @@ proc recreateRenderer(ctx: var VulkanContext, renderer: var CubeRenderer, width,
   recreateSwapChain(ctx, width, height)
   createSwapChainImageViews(ctx, renderer)
   createMsaaResources(ctx, renderer)
-  createRenderPass(ctx, renderer)
   createGraphicsPipeline(ctx, renderer)
-  createFramebuffers(ctx, renderer)
   recordCommandBuffers(ctx, renderer)
 
 proc recordCommandBuffers(ctx: VulkanContext, renderer: var CubeRenderer) =
-  renderer.commandBuffers.setLen(renderer.framebuffers.len)
+  renderer.commandBuffers.setLen(ctx.swapChainImages.len)
   var allocInfo = VkCommandBufferAllocateInfo(
     sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
     commandPool: ctx.commandPool,
@@ -989,9 +879,7 @@ proc initRenderer(ctx: VulkanContext, renderer: var CubeRenderer) =
   createDescriptorResources(ctx, renderer)
   createSwapChainImageViews(ctx, renderer)
   createMsaaResources(ctx, renderer)
-  createRenderPass(ctx, renderer)
   createGraphicsPipeline(ctx, renderer)
-  createFramebuffers(ctx, renderer)
   createVertexBuffer(ctx, renderer)
   recordCommandBuffers(ctx, renderer)
 
@@ -1001,31 +889,133 @@ proc recordCurrentFrame(ctx: var VulkanContext, renderer: var CubeRenderer, imag
   var beginInfo = VkCommandBufferBeginInfo(sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
   checkVk(vkBeginCommandBuffer(commandBuffer, beginInfo.addr), "Beginning cube command buffer")
 
-  var clearValues =
-    if renderer.msaaEnabled:
-      @[
-        VkClearValue(color: VkClearColorValue(float32: ClearColor)),
-        VkClearValue(color: VkClearColorValue(float32: ClearColor)),
-        VkClearValue(depthStencil: VkClearDepthStencilValue(depth: 1.0'f32, stencil: 0))
-      ]
-    else:
-      @[
-        VkClearValue(color: VkClearColorValue(float32: ClearColor)),
-        VkClearValue(depthStencil: VkClearDepthStencilValue(depth: 1.0'f32, stencil: 0))
-      ]
-  var renderPassInfo = VkRenderPassBeginInfo(
-    sType: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-    renderPass: renderer.renderPass,
-    framebuffer: renderer.framebuffers[imageIndex],
-    renderArea: VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: ctx.swapChainExtent),
-    clearValueCount: uint32(clearValues.len),
-    pClearValues: clearValues[0].addr
+  let
+    colorRange = VkImageSubresourceRange(
+      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+      baseMipLevel: 0,
+      levelCount: 1,
+      baseArrayLayer: 0,
+      layerCount: 1
+    )
+    depthRange = VkImageSubresourceRange(
+      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT),
+      baseMipLevel: 0,
+      levelCount: 1,
+      baseArrayLayer: 0,
+      layerCount: 1
+    )
+  var barriers: seq[VkImageMemoryBarrier2]
+  barriers.add VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    srcAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+    dstAccessMask: VkAccessFlags2(VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+    oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+    newLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: ctx.swapChainImages[imageIndex],
+    subresourceRange: colorRange
   )
+  if renderer.msaaEnabled:
+    barriers.add VkImageMemoryBarrier2(
+      sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+      srcAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+      dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+      dstAccessMask: VkAccessFlags2(VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+      oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+      newLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+      srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+      dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+      image: renderer.colorImages[imageIndex],
+      subresourceRange: colorRange
+    )
+  barriers.add VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    srcAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT),
+    dstAccessMask: VkAccessFlags2(VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT),
+    oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+    newLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: renderer.depthImages[imageIndex],
+    subresourceRange: depthRange
+  )
+  var dependencyInfo = VkDependencyInfo(
+    sType: VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    imageMemoryBarrierCount: uint32(barriers.len),
+    pImageMemoryBarriers: barriers[0].addr
+  )
+  vkCmdPipelineBarrier2(commandBuffer, dependencyInfo.addr)
+
+  var
+    colorClear = VkClearValue(color: VkClearColorValue(float32: ClearColor))
+    depthClear = VkClearValue(
+      depthStencil: VkClearDepthStencilValue(depth: 1.0'f32, stencil: 0)
+    )
+    colorAttachment = VkRenderingAttachmentInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      imageView:
+        if renderer.msaaEnabled: renderer.colorImageViews[imageIndex]
+        else: renderer.imageViews[imageIndex],
+      imageLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+      resolveMode:
+        if renderer.msaaEnabled: VK_RESOLVE_MODE_AVERAGE_BIT
+        else: VK_RESOLVE_MODE_NONE,
+      resolveImageView:
+        if renderer.msaaEnabled: renderer.imageViews[imageIndex]
+        else: VkImageView(0),
+      resolveImageLayout:
+        if renderer.msaaEnabled: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL
+        else: VK_IMAGE_LAYOUT_UNDEFINED,
+      loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
+      storeOp:
+        if renderer.msaaEnabled: VK_ATTACHMENT_STORE_OP_DONT_CARE
+        else: VK_ATTACHMENT_STORE_OP_STORE,
+      clearValue: colorClear
+    )
+    depthAttachment = VkRenderingAttachmentInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      imageView: renderer.depthImageViews[imageIndex],
+      imageLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+      loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
+      storeOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      clearValue: depthClear
+    )
+    renderingInfo = VkRenderingInfo(
+      sType: VK_STRUCTURE_TYPE_RENDERING_INFO,
+      renderArea: VkRect2D(
+        offset: VkOffset2D(x: 0, y: 0),
+        extent: ctx.swapChainExtent
+      ),
+      layerCount: 1,
+      colorAttachmentCount: 1,
+      pColorAttachments: colorAttachment.addr,
+      pDepthAttachment: depthAttachment.addr
+    )
+    viewport = VkViewport(
+      x: 0,
+      y: ctx.swapChainExtent.height.float32,
+      width: ctx.swapChainExtent.width.float32,
+      height: -ctx.swapChainExtent.height.float32,
+      minDepth: 0,
+      maxDepth: 1
+    )
+    scissor = VkRect2D(
+      offset: VkOffset2D(x: 0, y: 0),
+      extent: ctx.swapChainExtent
+    )
   var vertexBuffers = [renderer.vertexBuffer]
   var offsets = [VkDeviceSize(0)]
   var descriptorSet = renderer.descriptorSet
 
-  vkCmdBeginRenderPass(commandBuffer, renderPassInfo.addr, VK_SUBPASS_CONTENTS_INLINE)
+  vkCmdBeginRendering(commandBuffer, renderingInfo.addr)
+  vkCmdSetViewport(commandBuffer, 0, 1, viewport.addr)
+  vkCmdSetScissor(commandBuffer, 0, 1, scissor.addr)
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipeline)
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer.pipelineLayout, 0, 1, descriptorSet.addr, 0, nil)
   vkCmdPushConstants(
@@ -1038,7 +1028,24 @@ proc recordCurrentFrame(ctx: var VulkanContext, renderer: var CubeRenderer, imag
   )
   vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers[0].addr, offsets[0].addr)
   vkCmdDraw(commandBuffer, uint32(CubeVertices.len), 1, 0, 0)
-  vkCmdEndRenderPass(commandBuffer)
+  vkCmdEndRendering(commandBuffer)
+
+  var toPresent = VkImageMemoryBarrier2(
+    sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    srcStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT),
+    srcAccessMask: VkAccessFlags2(VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT),
+    dstStageMask: VkPipelineStageFlags2(VK_PIPELINE_STAGE_2_NONE),
+    dstAccessMask: VkAccessFlags2(VK_ACCESS_2_NONE),
+    oldLayout: VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+    newLayout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+    image: ctx.swapChainImages[imageIndex],
+    subresourceRange: colorRange
+  )
+  dependencyInfo.imageMemoryBarrierCount = 1
+  dependencyInfo.pImageMemoryBarriers = toPresent.addr
+  vkCmdPipelineBarrier2(commandBuffer, dependencyInfo.addr)
   checkVk(vkEndCommandBuffer(commandBuffer), "Ending cube command buffer")
 
 proc drawFrame(ctx: var VulkanContext, renderer: var CubeRenderer): bool =
@@ -1063,28 +1070,50 @@ proc drawFrame(ctx: var VulkanContext, renderer: var CubeRenderer): bool =
   recordCurrentFrame(ctx, renderer, imageIndex)
 
   var
-    waitSemaphores = [ctx.imageAvailableSemaphores[frame]]
-    waitStages: array[1, VkPipelineStageFlags] = [VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)]
-    signalSemaphores = [ctx.renderFinishedSemaphores[frame]]
     commandBuffer = renderer.commandBuffers[imageIndex]
-    submitInfo = VkSubmitInfo(
-      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      waitSemaphoreCount: 1,
-      pWaitSemaphores: waitSemaphores[0].addr,
-      pWaitDstStageMask: waitStages[0].addr,
-      commandBufferCount: 1,
-      pCommandBuffers: commandBuffer.addr,
-      signalSemaphoreCount: 1,
-      pSignalSemaphores: signalSemaphores[0].addr
+    waitInfo = VkSemaphoreSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+      semaphore: ctx.imageAvailableSemaphores[frame],
+      stageMask: VkPipelineStageFlags2(
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+      ),
+      value: 0,
+      deviceIndex: 0
     )
-  checkVk(vkQueueSubmit(ctx.graphicsQueue, 1, submitInfo.addr, fence), "Submitting cube command buffer")
+    commandBufferInfo = VkCommandBufferSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+      commandBuffer: commandBuffer,
+      deviceMask: 0
+    )
+    signalInfo = VkSemaphoreSubmitInfo(
+      sType: VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+      semaphore: ctx.renderFinishedSemaphores[frame],
+      stageMask: VkPipelineStageFlags2(
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+      ),
+      value: 0,
+      deviceIndex: 0
+    )
+    submitInfo = VkSubmitInfo2(
+      sType: VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+      waitSemaphoreInfoCount: 1,
+      pWaitSemaphoreInfos: waitInfo.addr,
+      commandBufferInfoCount: 1,
+      pCommandBufferInfos: commandBufferInfo.addr,
+      signalSemaphoreInfoCount: 1,
+      pSignalSemaphoreInfos: signalInfo.addr
+    )
+  checkVk(
+    vkQueueSubmit2(ctx.graphicsQueue, 1, submitInfo.addr, fence),
+    "Submitting cube command buffer"
+  )
 
   var
     swapChains = [ctx.swapChain]
     presentInfo = VkPresentInfoKHR(
       sType: VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
       waitSemaphoreCount: 1,
-      pWaitSemaphores: signalSemaphores[0].addr,
+      pWaitSemaphores: signalInfo.semaphore.addr,
       swapchainCount: 1,
       pSwapchains: swapChains[0].addr,
       pImageIndices: imageIndex.addr
