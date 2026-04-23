@@ -130,15 +130,16 @@ proc isDeviceSuitable(
 proc chooseSwapSurfaceFormat(
   availableFormats: seq[VkSurfaceFormatKHR]
 ): VkSurfaceFormatKHR =
-  ## Picks SRGB B8G8R8A8 if available, then UNORM, otherwise first format.
-  ## SRGB output avoids writing linear colors into a UNORM swapchain.
-  ## That mismatch can make darker tones look overly crushed.
+  ## Prefer a UNORM swapchain because higher layers currently supply UI colors
+  ## and clear colors in display space rather than linear space.
+  ## Using an SRGB swapchain here would apply an extra gamma transform and wash
+  ## the whole UI out.
   for f in availableFormats:
-    if f.format == VK_FORMAT_B8G8R8A8_SRGB and
+    if f.format == VK_FORMAT_B8G8R8A8_UNORM and
        f.colorSpace.uint32 == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
       return f
   for f in availableFormats:
-    if f.format == VK_FORMAT_B8G8R8A8_UNORM and
+    if f.format == VK_FORMAT_B8G8R8A8_SRGB and
        f.colorSpace.uint32 == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
       return f
   availableFormats[0]
