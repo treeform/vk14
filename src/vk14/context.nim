@@ -38,6 +38,7 @@ type
     inFlightFences*: array[FRAME_COUNT, VkFence]
     currentFrame*: int
     vsync*: bool
+    maxSamplerAnisotropy*: float32 ## Enabled limit, or 1 when unavailable/disabled.
 
 proc versionString(version: uint32): string =
   ## Formats a Vulkan API version for error messages.
@@ -249,10 +250,12 @@ proc recreateSwapChain*(
 
 proc initDevice*(
   ctx: var VulkanContext, hwnd: int,
-  width, height: int, vsync = true
+  width, height: int, vsync = true, samplerAnisotropy = false
 ) =
   ## Initializes full Vulkan device, surface, swapchain, and sync objects.
+  ## Optional anisotropic sampling is enabled only when supported by the GPU.
   ctx.vsync = vsync
+  ctx.maxSamplerAnisotropy = 1.0'f
   loadVulkan()
   doAssert vkInit()
 
@@ -381,6 +384,12 @@ proc initDevice*(
       ppEnabledExtensionNames: cast[cstringArray](
         deviceExtNames[0].unsafeAddr),
     )
+  if samplerAnisotropy:
+    var supported: VkPhysicalDeviceFeatures
+    vkGetPhysicalDeviceFeatures(ctx.physicalDevice, supported.addr)
+    deviceFeatures.samplerAnisotropy = supported.samplerAnisotropy
+    if supported.samplerAnisotropy == VK_TRUE:
+      ctx.maxSamplerAnisotropy = deviceProperties.limits.maxSamplerAnisotropy
   if vkCreateDevice(
        ctx.physicalDevice, deviceCreateInfo.addr,
        nil, ctx.device.addr
