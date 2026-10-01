@@ -16,10 +16,10 @@
 <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAA3XAAAN1wFCKJt4AAAAB3RJTUUH4QQQEwksSS9ZWwAAAk1JREFUWMPtll2ITVEUx39nn/O7Y5qR8f05wtCUUr6ZIS++8pEnkZInPImneaCQ5METNdOkeFBKUhMPRIkHKfEuUZSUlGlKPN2TrgfncpvmnntnmlEyq1Z7t89/rf9a6+y99oZxGZf/XeIq61EdtgKXgdXA0xrYAvBjOIF1AI9zvjcC74BSpndrJPkBWDScTF8Aa4E3wDlgHbASaANmVqlcCnwHvgDvgVfAJ+AikAAvgfVZwLnSVZHZaOuKoQi3ZOMi4NkYkpe1p4J7A8BpYAD49hfIy/oqG0+hLomiKP2L5L+1ubn5115S+3OAn4EnwBlgMzCjyt6ZAnQCJ4A7wOs88iRJHvw50HoujuPBoCKwHWiosy8MdfZnAdcHk8dxXFJ3VQbQlCTJvRBCGdRbD4M6uc5glpY3eAihpN5S5w12diSEcCCEcKUO4ljdr15T76ur1FDDLIQQ3qv71EdDOe3Kxj3leRXyk+pxdWnFWod6Wt2bY3de3aSuUHcPBVimHs7mK9WrmeOF6lR1o9qnzskh2ar2qm1qizpfXaPeVGdlmGN5pb09qMxz1Xb1kLqgzn1RyH7JUXW52lr5e/Kqi9qpto7V1atuUzfnARrV7jEib1T76gG2qxdGmXyiekkt1GswPTtek0aBfJp6YySGBfWg2tPQ0FAYgf1stUfdmdcjarbYJEniKIq6gY/Aw+zWHAC+p2labGpqiorFYgGYCEzN7oQdQClN07O1/EfDyGgC0ALMBdYAi4FyK+4H3gLPsxfR1zRNi+NP7nH5J+QntnXe5B5mpfQAAAAASUVORK5CYII=">
 
 <!-- CSS -->
-<link rel="stylesheet" type="text/css" href="../nimdoc.out.css?v=2.2.10">
+<link rel="stylesheet" type="text/css" href="../nimdoc.out.css?v=2.2.12">
 
 <!-- JS -->
-<script type="text/javascript" src="../dochack.js?v=2.2.10"></script>
+<script type="text/javascript" src="../dochack.js?v=2.2.12"></script>
 </head>
 <body>
   <div class="document" id="documentId">
@@ -78,7 +78,8 @@
   renderFinishedSemaphores*: array[FRAME_COUNT, VkSemaphore]
   inFlightFences*: array[FRAME_COUNT, VkFence]
   currentFrame*: int
-  vsync*: bool">VulkanContext</a></li>
+  vsync*: bool
+  maxSamplerAnisotropy*: float32 ## Enabled limit, or 1 when unavailable/disabled.">VulkanContext</a></li>
 
     </ul>
   </details>
@@ -92,7 +93,9 @@
 
 </ul>
 <ul class="simple nested-toc-section">initDevice
-  <li><a class="reference" href="#initDevice%2CVulkanContext%2Cint%2Cint%2Cint" title="initDevice(ctx: var VulkanContext; hwnd: int; width, height: int; vsync = true)">initDevice(ctx: var VulkanContext; hwnd: int; width, height: int; vsync = true)</a></li>
+  <li><a class="reference" href="#initDevice%2CVulkanContext%2Cint%2Cint%2Cint" title="initDevice(ctx: var VulkanContext; hwnd: int; width, height: int; vsync = true;
+           samplerAnisotropy = false)">initDevice(ctx: var VulkanContext; hwnd: int; width, height: int; vsync = true;
+           samplerAnisotropy = false)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">recordClearFrame
@@ -151,7 +154,8 @@
   <span class="Identifier">renderFinishedSemaphores</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">array</span><span class="Other">[</span><span class="Identifier">FRAME_COUNT</span><span class="Other">,</span> <a href="types.html#VkSemaphore"><span class="Identifier">VkSemaphore</span></a><span class="Other">]</span>
   <span class="Identifier">inFlightFences</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">array</span><span class="Other">[</span><span class="Identifier">FRAME_COUNT</span><span class="Other">,</span> <a href="types.html#VkFence"><span class="Identifier">VkFence</span></a><span class="Other">]</span>
   <span class="Identifier">currentFrame</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int</span>
-  <span class="Identifier">vsync</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span></pre></dt>
+  <span class="Identifier">vsync</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>
+  <span class="Identifier">maxSamplerAnisotropy</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">float32</span> <span class="Comment">## Enabled limit, or 1 when unavailable/disabled.</span></pre></dt>
   <dd>
     
     
@@ -173,8 +177,8 @@
   <dd>
     
     Destroys all Vulkan objects in the context.
-    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L591" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
-<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L591" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
+    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L600" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
+<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L600" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
 
   </dd>
 </div>
@@ -183,13 +187,13 @@
 <div id="initDevice-procs-all">
   <div id="initDevice,VulkanContext,int,int,int">
   <dt><pre><span class="Keyword">proc</span> <a href="#initDevice%2CVulkanContext%2Cint%2Cint%2Cint"><span class="Identifier">initDevice</span></a><span class="Other">(</span><span class="Identifier">ctx</span><span class="Other">:</span> <span class="Keyword">var</span> <a href="#VulkanContext"><span class="Identifier">VulkanContext</span></a><span class="Other">;</span> <span class="Identifier">hwnd</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">width</span><span class="Other">,</span> <span class="Identifier">height</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
-                <span class="Identifier">vsync</span> <span class="Other">=</span> <span class="Identifier">true</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
-                                <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+                <span class="Identifier">vsync</span> <span class="Other">=</span> <span class="Identifier">true</span><span class="Other">;</span> <span class="Identifier">samplerAnisotropy</span> <span class="Other">=</span> <span class="Identifier">false</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
-    Initializes full Vulkan device, surface, swapchain, and sync objects.
-    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L250" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
-<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L250" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
+    Initializes full Vulkan device, surface, swapchain, and sync objects. Optional anisotropic sampling is enabled only when supported by the GPU.
+    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L251" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
+<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L251" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
 
   </dd>
 </div>
@@ -203,8 +207,8 @@
   <dd>
     
     Records a command buffer that clears the swapchain image.
-    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L453" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
-<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L453" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
+    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L462" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
+<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L462" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
 
   </dd>
 </div>
@@ -217,8 +221,8 @@
   <dd>
     
     Waits for the device and recreates the swapchain.
-    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L239" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
-<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L239" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
+    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L240" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
+<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L240" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
 
   </dd>
 </div>
@@ -231,8 +235,8 @@
   <dd>
     
     Acquires, records, submits, and presents a clear-color frame.
-    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L528" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
-<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L528" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
+    <a href="https://github.com/treeform/vk14/tree/master/src/vk14/context.nim#L537" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
+<a href="https://github.com/treeform/vk14/edit/devel/src/vk14/context.nim#L537" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
 
   </dd>
 </div>
@@ -248,7 +252,7 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-23 22:34:07 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-01 17:44:04 UTC</small>
       </div>
     </div>
   </div>
